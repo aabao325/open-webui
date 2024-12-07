@@ -6,7 +6,10 @@ from pathlib import Path
 from typing import Literal, Optional, overload
 
 import aiohttp
+from aiocache import cached
 import requests
+
+
 from open_webui.apps.webui.models.models import Models
 from open_webui.config import (
     CACHE_DIR,
@@ -21,6 +24,7 @@ from open_webui.env import (
     AIOHTTP_CLIENT_TIMEOUT,
     AIOHTTP_CLIENT_TIMEOUT_OPENAI_MODEL_LIST,
     ENABLE_FORWARD_USER_INFO_HEADERS,
+    BYPASS_MODEL_ACCESS_CONTROL,
 )
 
 from open_webui.constants import ERROR_MESSAGES
@@ -302,6 +306,8 @@ async def get_all_models_responses() -> list:
                     }
 
                     tasks.append(asyncio.ensure_future(asyncio.sleep(0, model_list)))
+            else:
+                tasks.append(asyncio.ensure_future(asyncio.sleep(0, None)))
 
     responses = await asyncio.gather(*tasks)
 
@@ -313,7 +319,9 @@ async def get_all_models_responses() -> list:
             prefix_id = api_config.get("prefix_id", None)
 
             if prefix_id:
-                for model in response["data"]:
+                for model in (
+                    response if isinstance(response, list) else response.get("data", [])
+                ):
                     model["id"] = f"{prefix_id}.{model['id']}"
 
     log.debug(f"get_all_models:responses() {responses}")
@@ -321,6 +329,7 @@ async def get_all_models_responses() -> list:
     return responses
 
 
+@cached(ttl=3)
 async def get_all_models() -> dict[str, list]:
     log.info("get_all_models()")
 
@@ -414,7 +423,7 @@ async def get_models(url_idx: Optional[int] = None, user=Depends(get_verified_us
                 error_detail = f"Unexpected error: {str(e)}"
                 raise HTTPException(status_code=500, detail=error_detail)
 
-    if user.role == "user":
+    if user.role == "user" and not BYPASS_MODEL_ACCESS_CONTROL:
         # Filter models based on user access control
         filtered_models = []
         for model in models.get("data", []):
@@ -576,8 +585,6 @@ async def generate_chat_completion(
 
     # Convert the modified body back to JSON
     payload = json.dumps(payload)
-
-    log.debug(payload)
 
     headers = {}
     headers["Authorization"] = f"Bearer {key}"
